@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, shrink-to-fit=no"
+    />
+    <title>Stlite app</title>
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/@stlite/browser@0.77.0/build/style.css"
+    />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module">
+import { mount } from "https://cdn.jsdelivr.net/npm/@stlite/browser@0.77.0/build/stlite.js"
+mount(
+  {
+    requirements: ["streamlit", "altair", "numpy", "pandas"],
+    entrypoint: "streamlit_app.py",
+    files: {
+"streamlit_app.py": `import streamlit as st
+import pandas as pd
+import numpy as np
+import altair as alt
+
+# Set page config for wide mode
+st.set_page_config(page_title="US Job Postings by Sector", layout="wide")
+
+
+# Load data
+@st.cache_data
+def load_data():
+    url = "https://raw.githubusercontent.com/hiring-lab/job_postings_tracker/master/US/job_postings_by_sector_US.csv"
+    df = pd.read_csv(url)
+    df['date'] = pd.to_datetime(df['date'])
+    return df
+
+
+df = load_data()
+
+
+# Calculate Coefficient of Variation and Rolling Volatility
+def calculate_volatility(data):
+    cv = data.std() / data.mean()
+    rolling_vol = data.rolling(window=30).std() / data.rolling(window=30).mean()
+    return cv, rolling_vol
+
+
+# Calculate volatility for all sectors
+all_sectors_volatility = {}
+for sector in df['display_name'].unique():
+    sector_data = df[df['display_name'] == sector]
+    cv, _ = calculate_volatility(sector_data['indeed_job_postings_index'])
+    all_sectors_volatility[sector] = cv
+
+# Create two columns: one narrow for controls, one wide for the chart
+col1, col2 = st.columns([1, 4])
+
+with col1:
+    st.title("US Job Postings by Sector")
+    st.header("Select Sectors")
+
+    # Add Check/Uncheck All option
+    select_all = st.checkbox("Select All")
+
+    # Create checkboxes for sector selection
+    sectors = sorted(df['display_name'].unique())  # Sort the sectors alphabetically
+    sector_states = {}
+    for sector in sectors:
+        sector_states[sector] = st.checkbox(sector, value=select_all)
+
+    selected_sectors = [sector for sector, state in sector_states.items() if state]
+
+    # Add a date range selector
+    min_date = df['date'].min().to_pydatetime()
+    max_date = df['date'].max().to_pydatetime()
+    date_range = st.date_input("Select date range",
+                               [min_date, max_date],
+                               min_value=min_date,
+                               max_value=max_date)
+
+    # Show raw data option
+    show_raw_data = st.checkbox("Show raw data")
+
+with col2:
+    # Filter data based on selection and date range
+    filtered_df = df[
+        (df['display_name'].isin(selected_sectors)) &
+        (df['date'] >= pd.Timestamp(date_range[0])) &
+        (df['date'] <= pd.Timestamp(date_range[1]))
+        ]
+
+    # Job Postings Index Chart
+    job_postings_chart = alt.Chart(filtered_df).mark_line().encode(
+        x=alt.X('date', title='Date'),
+        y=alt.Y('indeed_job_postings_index', title='Indeed Job Postings Index'),
+        color='display_name'
+    ).properties(
+        title='Job Postings Index by Sector'
+    )
+
+    # Calculate Rolling Volatility
+    def calculate_rolling_volatility(df_sector):
+        df_sector = df_sector.sort_values(by='date')  # Ensure data is sorted by date
+        rolling_vol = df_sector['indeed_job_postings_index'].rolling(window=30).std() / df_sector['indeed_job_postings_index'].rolling(window=30).mean()
+        df_sector['rolling_volatility'] = rolling_vol
+        df_sector = df_sector.dropna()  # Remove NaN values resulting from rolling calculation
+        return df_sector
+
+    # Apply rolling volatility calculation to each selected sector
+    volatility_dfs = []
+    for sector in selected_sectors:
+        sector_data = filtered_df[filtered_df['display_name'] == sector].copy()
+        if not sector_data.empty:  # Check if sector_data is not empty
+            sector_data = calculate_rolling_volatility(sector_data)
+            volatility_dfs.append(sector_data)
+
+    # Concatenate volatility dataframes
+    if volatility_dfs:
+        volatility_df = pd.concat(volatility_dfs)
+
+        # Rolling Volatility Chart
+        rolling_volatility_chart = alt.Chart(volatility_df).mark_line().encode(
+            x=alt.X('date', title='Date'),
+            y=alt.Y('rolling_volatility', title='30-Day Rolling Volatility'),
+            color='display_name'
+        ).properties(
+            title='30-Day Rolling Volatility by Sector'
+        )
+
+        # Combine charts vertically
+        combined_chart = alt.vconcat(job_postings_chart, rolling_volatility_chart).resolve_scale(
+            x='shared'
+        )
+        st.altair_chart(combined_chart, use_container_width=True)
+    else:
+        st.warning("No data available to display rolling volatility for the selected sectors and date range.")
+
+    # Create three columns for volatility summaries
+    vol_col1, vol_col2, vol_col3 = st.columns(3)
+
+    with vol_col1:
+        st.subheader("Volatility Summary (All Sectors)")
+        volatility_summary = pd.DataFrame({'Coefficient of Variation': all_sectors_volatility}).sort_values(
+            'Coefficient of Variation', ascending=False)
+        st.dataframe(volatility_summary)
+
+    with vol_col2:
+        st.subheader("Top 10 Lowest Volatility")
+        lowest_volatility = volatility_summary.sort_values('Coefficient of Variation').head(10)
+        st.dataframe(lowest_volatility)
+
+    with vol_col3:
+        st.subheader("Top 10 Highest Volatility")
+        highest_volatility = volatility_summary.sort_values('Coefficient of Variation', ascending=False).head(10)
+        st.dataframe(highest_volatility)
+
+    # Display raw data if checkbox is selected
+    if show_raw_data:
+        st.subheader("Raw Data")
+        st.dataframe(filtered_df, height=400)  # Set a fixed height for the dataframe`,
+
+},
+  },
+  document.getElementById("root")
+)
+
+    </script>
+  </body>
+  <!-- Generated from Stlite Sharing (https://edit.share.stlite.net/), and the source version is cfc74c144dbcc9ffdd7d92cf0434dd6a075891e2 -->
+</html>

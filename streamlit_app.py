@@ -1,8 +1,7 @@
 import streamlit as st
 import pandas as pd
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import numpy as np
+import altair as alt
 
 # Set page config for wide mode
 st.set_page_config(page_title="US Job Postings by Sector", layout="wide")
@@ -45,7 +44,7 @@ with col1:
     select_all = st.checkbox("Select All")
 
     # Create checkboxes for sector selection
-    sectors = df['display_name'].unique()
+    sectors = sorted(df['display_name'].unique())  # Sort the sectors alphabetically
     sector_states = {}
     for sector in sectors:
         sector_states[sector] = st.checkbox(sector, value=select_all)
@@ -53,10 +52,12 @@ with col1:
     selected_sectors = [sector for sector, state in sector_states.items() if state]
 
     # Add a date range selector
+    min_date = df['date'].min().to_pydatetime()
+    max_date = df['date'].max().to_pydatetime()
     date_range = st.date_input("Select date range",
-                               [df['date'].min(), df['date'].max()],
-                               min_value=df['date'].min(),
-                               max_value=df['date'].max())
+                               [min_date, max_date],
+                               min_value=min_date,
+                               max_value=max_date)
 
     # Show raw data option
     show_raw_data = st.checkbox("Show raw data")
@@ -69,36 +70,51 @@ with col2:
         (df['date'] <= pd.Timestamp(date_range[1]))
         ]
 
-    # Create subplots: one for job postings index, one for rolling volatility
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
-                        vertical_spacing=0.1,
-                        subplot_titles=("Job Postings Index", "30-Day Rolling Volatility"))
+    # Job Postings Index Chart
+    job_postings_chart = alt.Chart(filtered_df).mark_line().encode(
+        x=alt.X('date', title='Date'),
+        y=alt.Y('indeed_job_postings_index', title='Indeed Job Postings Index'),
+        color='display_name'
+    ).properties(
+        title='Job Postings Index by Sector'
+    )
 
-    # Calculate and store volatility measures for selected sectors
-    volatility_data = {}
+    # Calculate Rolling Volatility
+    def calculate_rolling_volatility(df_sector):
+        df_sector = df_sector.sort_values(by='date')  # Ensure data is sorted by date
+        rolling_vol = df_sector['indeed_job_postings_index'].rolling(window=30).std() / df_sector['indeed_job_postings_index'].rolling(window=30).mean()
+        df_sector['rolling_volatility'] = rolling_vol
+        df_sector = df_sector.dropna()  # Remove NaN values resulting from rolling calculation
+        return df_sector
 
+    # Apply rolling volatility calculation to each selected sector
+    volatility_dfs = []
     for sector in selected_sectors:
-        sector_data = filtered_df[filtered_df['display_name'] == sector]
+        sector_data = filtered_df[filtered_df['display_name'] == sector].copy()
+        if not sector_data.empty:  # Check if sector_data is not empty
+            sector_data = calculate_rolling_volatility(sector_data)
+            volatility_dfs.append(sector_data)
 
-        # Add trace for job postings index
-        fig.add_trace(go.Scatter(x=sector_data['date'], y=sector_data['indeed_job_postings_index'],
-                                 mode='lines', name=sector), row=1, col=1)
+    # Concatenate volatility dataframes
+    if volatility_dfs:
+        volatility_df = pd.concat(volatility_dfs)
 
-        # Calculate volatility measures
-        _, rolling_vol = calculate_volatility(sector_data['indeed_job_postings_index'])
-        volatility_data[sector] = {'Rolling Volatility': rolling_vol}
+        # Rolling Volatility Chart
+        rolling_volatility_chart = alt.Chart(volatility_df).mark_line().encode(
+            x=alt.X('date', title='Date'),
+            y=alt.Y('rolling_volatility', title='30-Day Rolling Volatility'),
+            color='display_name'
+        ).properties(
+            title='30-Day Rolling Volatility by Sector'
+        )
 
-        # Add trace for rolling volatility
-        fig.add_trace(go.Scatter(x=sector_data['date'], y=rolling_vol,
-                                 mode='lines', name=f"{sector} Volatility"), row=2, col=1)
-
-    fig.update_layout(height=1000, title_text="Job Postings Index and Volatility by Sector")
-    fig.update_xaxes(title_text="Date", row=2, col=1)
-    fig.update_yaxes(title_text="Indeed Job Postings Index", row=1, col=1)
-    fig.update_yaxes(title_text="Coefficient of Variation", row=2, col=1)
-
-    # Display plot
-    st.plotly_chart(fig, use_container_width=True)
+        # Combine charts vertically
+        combined_chart = alt.vconcat(job_postings_chart, rolling_volatility_chart).resolve_scale(
+            x='shared'
+        )
+        st.altair_chart(combined_chart, use_container_width=True)
+    else:
+        st.warning("No data available to display rolling volatility for the selected sectors and date range.")
 
     # Create three columns for volatility summaries
     vol_col1, vol_col2, vol_col3 = st.columns(3)
